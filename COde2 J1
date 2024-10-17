@@ -1,0 +1,138 @@
+import pandas as pd
+import numpy as np
+from google.colab import files
+
+# Tải tệp lên từ máy tính
+uploaded = files.upload()
+uploaded = files.upload()
+# Đọc dữ liệu từ các tệp Excel đã tải lên
+LDT = pd.read_excel('linedata.xlsx')
+BDT = pd.read_excel('busdata.xlsx')
+# Lưu các giá trị từ Excel
+typebus = BDT['loainut']
+chieudai = LDT['L'] * 10**-3
+r = LDT['R'] * chieudai
+x = LDT['X'] * chieudai
+n = BDT.shape[0]
+nh = LDT.shape[0]
+rb = BDT['Rb']
+xb = BDT['Xb']
+tsobien = BDT['k']
+Sphutai = BDT['S']
+cosphi = BDT['cosphi']
+dp0 = BDT['DP0'] * 10**-3
+dq0 = BDT['DQ0'] * 10**-3
+# Khởi tạo dữ liệu ban đầu
+Scb = 100  # Đơn vị MWA
+Ucb = BDT.iloc[0, 3]  # Lấy bằng Uđm, đơn vị KV
+DC = 100  # Giá trị lặp ban đầu
+esp = 0.001  # Sai số so sánh
+# Tính toán các giá trị
+U = BDT['U'] / Ucb
+zb = rb + 1j * xb
+P = Sphutai * cosphi
+# Khởi tạo danh sách rỗng để lưu kết quả Q
+Q_list = []
+# Sử dụng vòng lặp for để tính toán Q
+for i in range(n):
+    if cosphi[i] == 0:
+        Q = Sphutai[i]
+    else:
+        Q = np.sqrt(Sphutai[i]**2 - P[i]**2)
+    Q_list.append(Q)
+# Chuyển danh sách Q_list thành Series hoặc cột trong DataFrame
+Q = pd.Series(Q_list)
+P = P * 10**-3
+Q = Q * 10**-3
+DSb = (P**2 + Q**2) / Ucb**2 * zb
+# Chuyển DSb từ Series pandas sang mảng numpy để lấy phần thực và phần ảo
+DSb_real = np.real(DSb.values)
+DSb_imag = np.imag(DSb.values)
+P = P + DSb_real + dp0
+Q = Q + DSb_imag + dq0
+P = P / Scb
+Q = Q / Scb
+Icb = Scb / (np.sqrt(3) * Ucb)
+Zcb = Ucb**2 / Scb
+buoclap = 0
+# Chương trình con Ybus
+# Khởi tạo ma trận Ybus với kích thước n x n và giá trị ban đầu là 0 + 0j
+Ybus = np.zeros((n, n), dtype=complex)
+# Tính toán phần tử ngoài đường chéo chính của Ybus
+for e in range(nh):
+    nut_dau = LDT.iloc[e, 1] - 1  # Chỉ số Python bắt đầu từ 0
+    nut_cuoi = LDT.iloc[e, 2] - 1
+    Ybus[nut_dau, nut_cuoi] = -1 / (r[e] + 1j * x[e]) * Zcb
+    Ybus[nut_cuoi, nut_dau] = Ybus[nut_dau, nut_cuoi]  # Đối xứng
+# Tính toán phần tử trên đường chéo chính của Ybus
+for e in range(n):
+    Ybus[e, e] = 0  # Khởi tạo phần tử trên đường chéo chính
+    for f in range(n):
+        if f != e:
+            Ybus[e, e] -= Ybus[e, f]
+# Giả sử Ybus đã được tính toán từ đoạn mã trước đó
+Ybus_df = pd.DataFrame(Ybus, index=[f'Nút {i+1}' for i in range(n)], columns=[f'Nút {i+1}' for i in range(n)])
+
+# Xuất ma trận Ybus ra file Excel
+Ybus_df.to_excel('Ybus_output.xlsx', index=True)
+#files.download('Ybus_output.xlsx')
+# Lấy giá trị tuyệt đối của các phần tử trong Ybus
+Y_abs = np.abs(Ybus)
+
+# Tìm góc lệch pha (góc của số phức) của các phần tử trong Ybus
+angles = np.angle(Ybus)
+
+# Chuyển Y_abs và angles thành DataFrame
+Y_abs_df = pd.DataFrame(Y_abs, index=[f'Nút {i+1}' for i in range(n)], columns=[f'Nút {i+1}' for i in range(n)])
+angles_df = pd.DataFrame(angles, index=[f'Nút {i+1}' for i in range(n)], columns=[f'Nút {i+1}' for i in range(n)])
+# Chương trình con công suất cho nhận
+m = 0
+for e in range(1, n):
+    if typebus[e] == 2:  # Xác nhận nút PV
+        m += 1
+
+Pcho = [0] * (n - 1)
+Qcho = [0] * (n - 1 - m)
+f, g = 0, 0
+
+for e in range(2, n):
+    if typebus[e] == 2:
+        Pcho[f] = P[e]
+        f += 1
+    elif typebus[e] == 3:  # Xác nhận nút PQ
+        Pcho[f] = -P[e]
+        Qcho[g] = -Q[e]
+        f += 1
+        g += 1
+# MA TRẬN JACOBI
+# Giả sử Y_abs_df và angles_df đã được định nghĩa
+n = 21  # Số lượng nút
+# Khởi tạo giá trị góc pha d
+d = np.zeros(n)  # n là số lượng nút, khởi tạo tất cả các góc bằng 0
+J1 = np.zeros((n, n))  # Khởi tạo ma trận J1 với kích thước n x n
+
+# Phần tử ngoài đường chéo, bỏ qua nút chuẩn (nút 1)
+for e in range(1, n):  # Bắt đầu từ 1, bỏ qua nút chuẩn
+    for f in range(1, n):
+        if f != e:
+            J1[e, f] = -U[e] * U[f] * Y_abs_df.iloc[e, f] * np.sin(angles_df.iloc[e, f] - d[e] + d[f])
+
+# Phần tử trên đường chéo, bỏ qua nút chuẩn (nút 1)
+for e in range(1, n):  # Bắt đầu từ 1, bỏ qua nút chuẩn
+    J1[e, e] = 0
+    for f in range(n):
+        if f != e:
+            J1[e, e] += U[e] * U[f] * Y_abs_df.iloc[e, f] * np.sin(angles_df.iloc[e, f] - d[e] + d[f])
+import pandas as pd
+
+# Giả sử ma trận J1 đã được tính toán, ví dụ:
+# J1 = np.zeros((n-1, n-1))  # Thay thế bằng giá trị J1 thực tế
+# Chuyển ma trận J1 thành DataFrame
+#J1_df = pd.DataFrame(J1, index=[f'Nút {i+1}' for i in range(n)], columns=[f'Nút {i+1}' for i in range(n)])
+
+# Xuất DataFrame ra file Excel
+#file_name = 'J1_matrix.xlsx'
+#J1_df.to_excel(file_name, index=True)
+
+#print(f'Ma trận J1 đã được xuất ra file {file_name}')
+print(J1)
